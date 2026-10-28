@@ -1,0 +1,95 @@
+name: ci
+
+# Runs a pull request's own code with a read-only token and no secrets. Never switch this
+# to `pull_request_target`, which would run a fork's code with write access.
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # The function-hooks mod API needs 2.1.309 or newer. Bump deliberately, in its own PR.
+  CLAUDE_CODE_VERSION: 2.1.312
+  DISABLE_AUTOUPDATER: '1'
+  CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1'
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+      - run: npm install --global "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}"
+      - run: claude plugin validate .
+
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+      - run: npm install --global "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}"
+      - run: claude plugin test .
+      - name: Type-check (when the CLI has laid the mod's types)
+        run: |
+          if [ -f .claude-plugin/types/tsconfig.json ]; then
+            npx --yes --package typescript@5.6.3 tsc -p .
+          else
+            echo "::notice::.claude-plugin/types not present on this runner; type-check skipped"
+          fi
+
+  secrets:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: gitleaks/gitleaks-action@e0c47f4f8be36e29cdc102c57e68cb5cbf0e8d1e # v3.0.0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  version:
+    # A change to what users install must come with a higher version, so `claude plugin update` sees it.
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Version is bumped when the mod changes
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          git fetch --no-tags origin "$BASE_REF"
+          base="origin/$BASE_REF"
+          if git diff --quiet "$base"...HEAD -- hooks types .claude-plugin; then
+            echo "The mod itself is unchanged; no version bump needed."
+            exit 0
+          fi
+          old=$(git show "$base:.claude-plugin/plugin.json" | node -pe 'JSON.parse(require("fs").readFileSync(0)).version')
+          new=$(node -pe 'require("./.claude-plugin/plugin.json").version')
+          node -e '
+            const [a, b] = process.argv.slice(1).map(v => v.split(".").map(Number))
+            const higher = b[0] - a[0] || b[1] - a[1] || b[2] - a[2]
+            if (higher <= 0) {
+              console.error(`::error::.claude-plugin/plugin.json version ${process.argv[2]} must be higher than ${process.argv[1]} on the base branch`)
+              process.exit(1)
+            }
+          ' "$old" "$new"
+          echo "Version $old -> $new"

@@ -16,7 +16,6 @@ declare module 'claude-code' {
     'unity-status': {
       // m_EditorVersion from ProjectSettings/ProjectVersion.txt; null outside a Unity project
       projectVersion: string | null
-      projectPath: string | null
       connection: Connection
       // the Editor's active build target on the last check that got an answer
       platform: string | null

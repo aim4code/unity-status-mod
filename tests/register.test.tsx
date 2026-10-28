@@ -22,7 +22,10 @@ type Editor = {
 
 // The world beneath the mod: a project folder, lsof, the unity CLI and the engine's empty band.
 // Tests change `editor` as Unity opens, closes, or gets the Pipeline package.
-function world(on: On, opts: { isUnity: boolean; platform: string | null; isOpen?: boolean; hasPipeline?: boolean }) {
+function world(
+  on: On,
+  opts: { isUnity: boolean; platform: string | null; isOpen?: boolean; hasPipeline?: boolean; versionFile?: string },
+) {
   const editor: Editor = {
     platform: opts.platform,
     isOpen: opts.isOpen,
@@ -32,7 +35,7 @@ function world(on: On, opts: { isUnity: boolean; platform: string | null; isOpen
   const runs: string[][] = []
   on('fs.read', () => {
     if (!opts.isUnity) throw new Error('ENOENT')
-    return { value: PROJECT_VERSION }
+    return { value: opts.versionFile ?? PROJECT_VERSION }
   })
   on('process.run', (_, e) => {
     const argv = (e as { argv: readonly string[] }).argv
@@ -44,7 +47,7 @@ function world(on: On, opts: { isUnity: boolean; platform: string | null; isOpen
     })
 
     if (argv[0] === '/bin/sh') return done('/usr/local/bin/unity\n')
-    if (argv[0] === 'lsof') return isOpen ? done('4242\n') : done('', 1)
+    if (argv[0]?.endsWith('/lsof')) return isOpen ? done('4242\n') : done('', 1)
     if (argv.includes('eval')) {
       return done(answers ? `{"result":"UNITYSTATUS:${editor.platform}"}` : '{"success":false}')
     }
@@ -313,5 +316,41 @@ test('a launched Editor that never answers ends in "Couldn\'t reach Unity", not 
   await clock.advance(10 * 60 * 1000)
   expect(await ui.find({ type: 'Text', text: /Couldn't reach Unity/ })).not.toBe(undefined)
   expect(await ui.find({ type: 'Button', key: 'connect' })).not.toBe(undefined)
+  await ui.unmount()
+})
+
+test('a --project-path in Claude\'s command never moves the mod off this session\'s project', async ($, on) => {
+  const clock = mock.clock(on)
+  const { runs } = world(on, { isUnity: true, platform: 'StandaloneOSX', hasPipeline: false })
+
+  await $.session.start({ cwd: '/proj', surface: 'desktop', isInteractive: true })
+  await clock.settle()
+  await $.tool.call({ tool: 'Bash', command: 'unity status --project-path /elsewhere' })
+  await clock.settle()
+
+  const ui = await $.ui.mount({ ...BAND, surface: 'desktop' })
+  await ui.press({ key: 'install' })
+  await clock.settle()
+
+  expect(runs.some(argv => argv.some(arg => arg.includes('/elsewhere')))).toBe(false)
+  const install = runs.find(argv => argv.includes('install'))
+  expect(install?.[install.indexOf('--project-path') + 1]).toBe('/proj')
+  await ui.unmount()
+})
+
+test('a ProjectVersion.txt whose version is not a plain version string shows no band', async ($, on) => {
+  const clock = mock.clock(on)
+  const { runs } = world(on, {
+    isUnity: true,
+    platform: 'StandaloneOSX',
+    versionFile: 'm_EditorVersion: 6000\u001b[2J' + 'x'.repeat(100) + '\n',
+  })
+
+  await $.session.start({ cwd: '/proj', surface: 'terminal', isInteractive: true })
+  await clock.settle()
+
+  expect(runs.length).toBe(0)
+  const ui = await $.ui.mount({ ...BAND, surface: 'terminal' })
+  expect((await ui.find({ type: 'Text', text: /engine/ }))?.text).toBe('engine')
   await ui.unmount()
 })
