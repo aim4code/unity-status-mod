@@ -1,19 +1,15 @@
-export type UnityInfo = {
-  version: string
-  platform: string
-  isCompiling: boolean
-  isBuilding: boolean
-  // false when the last probe got no answer (domain reload, a blocking build, Editor closed)
-  isResponding: boolean
-}
+export type Connection = 'idle' | 'connecting' | 'launching' | 'connected' | 'failed'
 
 declare module 'claude-code' {
   interface PluginState {
     'unity-status': {
-      // set once a unity-cli call of Claude's has been followed by a probe the Editor answered
-      isConnected: boolean
+      // m_EditorVersion from ProjectSettings/ProjectVersion.txt; null outside a Unity project
+      projectVersion: string | null
       projectPath: string | null
-      info: UnityInfo | null
+      connection: Connection
+      // what the live Editor reported on the last probe that answered
+      editorVersion: string | null
+      platform: string | null
       isHidden: boolean
     }
   }

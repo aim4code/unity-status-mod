@@ -4,24 +4,19 @@ A Claude Code mod that shows the status of the current Unity project session.
 
 ## What it does
 
-- **Connection pop-up.** The first time Claude runs a `unity` (unity-cli) command in a session, the mod checks whether a Unity Editor answers. If one does, a pop-up says Unity is connected for this session, with its version and platform. It appears once per session.
-- **Status band above the prompt.** Once connected, a band shows:
-  `Unity <version> · <active build target> · <status>`
-  The status is one of:
-  - Idle
-  - Compiling scripts…
-  - Building player…
-  - Editor busy / not responding
+- **Only in Unity projects.** The band above the prompt appears only when the session's folder has `ProjectSettings/ProjectVersion.txt`. Elsewhere the mod shows nothing and does nothing.
+- **Before connecting:** `Unity <project version> · ◆ [Connect to Unity] [Hide]`. The version comes from `ProjectVersion.txt`, so it shows with no Editor running.
+- **Connect to Unity** first tries to reach an Editor that's already open on the project. If none answers, it runs `unity open <project>` and checks every 5 seconds, for up to 2 minutes, until the Editor answers.
+- **Once connected:** `Unity <editor version> · <active platform> [↻] [Hide]`. ↻ re-reads the platform. If the Editor no longer answers, the Connect button comes back.
+- **Connection pop-up.** The first connection in a session pops up "Unity connected for this session". A connection Claude makes by running a `unity` command also counts, with no button press needed.
+- **Hide** hides the band for the rest of the session. Run `/unity-status` to show it again.
 
-  The band refreshes every 3 seconds. While a build or a script reload blocks the Editor, the status usually reads "not responding".
-- **Hide button.** Hides the band for the rest of the session. Run `/unity-status` to show it again.
-
-The mod gets its information by running `unity command eval` against the live Editor. If Claude passed `--project-path`, the mod checks that project.
+The mod has no background timer. It asks the Editor (with `unity command eval`) only when you press Connect or ↻, after Claude runs a `unity` command, and while it's waiting for a newly opened Editor. If Claude passed `--project-path`, the mod checks that project.
 
 ## Requirements
 
 - The Unity CLI (`unity`), on your `PATH` or at `~/.unity/bin/unity`.
-- A Unity Editor open on a project that has the Pipeline package installed, so `unity status` lists it.
+- For the platform: the project needs the Pipeline package installed, so the Unity CLI can reach the Editor while it's open.
 
 ## Install
 

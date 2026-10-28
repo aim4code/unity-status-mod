@@ -1,8 +1,10 @@
 {
   "name": "unity-status",
-  "version": "0.1.0",
-  "description": "Shows the connected Unity Editor's version, active platform and compile/build state above the prompt, and announces the first unity-cli connection of the session.",
-  "author": { "name": "Daniel Conde Linares" },
-  "license": "MIT",
-  "types": "./types/index.d.ts"
+  "version": "0.2.0",
+  "description": "In a Unity project, shows the project's Unity version and, once connected, the Editor's active platform above the prompt, with a Connect to Unity button.",
+  "types": "./types/index.d.ts",
+  "author": {
+    "name": "Daniel Conde Linares"
+  },
+  "license": "MIT"
 }
