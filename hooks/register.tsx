@@ -4,7 +4,6 @@ import type { EngineInterface, Register } from 'claude-code'
 import type { Connection } from '../types'
 
 const projectVersion = atom({ plugin: 'unity-status', key: 'projectVersion' } as const, null)
-const projectPath = atom({ plugin: 'unity-status', key: 'projectPath' } as const, null)
 const connection = atom({ plugin: 'unity-status', key: 'connection' } as const, 'idle' as Connection)
 const platform = atom({ plugin: 'unity-status', key: 'platform' } as const, null)
 const isHidden = atom({ plugin: 'unity-status', key: 'isHidden' } as const, false)
@@ -15,8 +14,10 @@ const WATCH_TRIES = 120
 
 // A Bash command that runs the unity CLI (bare, or by a path ending in /unity).
 const RUNS_UNITY = /(?:^|[\s;&|(`'"/])unity(?=\s|$)/
-const PROJECT_PATH = /--project-path(?:=|\s+)(?:"([^"]+)"|'([^']+)'|(\S+))/
-const EDITOR_VERSION = /^m_EditorVersion:\s*(\S+)/m
+// Only a plain version string from the project's file reaches the band.
+const EDITOR_VERSION = /^m_EditorVersion:[ \t]*([0-9A-Za-z._-]{1,32})[ \t]*$/m
+// Absolute, so a `lsof` in the project folder or early on PATH is never the one run.
+const LSOF = ['/usr/sbin/lsof', '/usr/bin/lsof']
 
 // Asks the live Editor for its active build target, behind a marker to find it in the output.
 const PROBE = 'return "UNITYSTATUS:" + UnityEditor.EditorUserBuildSettings.activeBuildTarget;'
@@ -39,33 +40,36 @@ let projectRoot = '.'
 let inFlight: Promise<string | null> | null = null
 let watching: { cancel: () => void } | null = null
 
+// The unity CLI's absolute path: its default install first, then PATH. A relative answer
+// (a `unity` in the current folder) is never taken.
 async function resolveUnity($: EngineInterface): Promise<string> {
   if (unityBin !== null) return unityBin
   const found = await $.process.run([
     '/bin/sh',
     '-c',
-    'command -v unity || { [ -x "$HOME/.unity/bin/unity" ] && echo "$HOME/.unity/bin/unity"; }',
+    '[ -x "$HOME/.unity/bin/unity" ] && echo "$HOME/.unity/bin/unity" || command -v unity',
   ])
-  const bin = found.stdout.trim().split('\n')[0] || 'unity'
+  const bin = found.stdout.trim().split('\n')[0] ?? ''
+  if (!bin.startsWith('/')) throw new Error('unity CLI not found')
   unityBin = bin
 
   return bin
 }
 
-async function root($: EngineInterface): Promise<string> {
-  return (await read($, projectPath)) ?? projectRoot
-}
-
 // Whether an Editor has the project open: Unity holds Temp/UnityLockfile while it runs.
 // null where lsof is not there to ask.
 async function isOpen($: EngineInterface): Promise<boolean | null> {
-  try {
-    const ran = await $.process.run(['lsof', '-t', '--', `${await root($)}/Temp/UnityLockfile`], { timeoutMs: 5000 })
+  for (const lsof of LSOF) {
+    try {
+      const ran = await $.process.run([lsof, '-t', '--', `${projectRoot}/Temp/UnityLockfile`], { timeoutMs: 5000 })
 
-    return ran.exitCode === 0 && ran.stdout.trim() !== ''
-  } catch {
-    return null
+      return ran.exitCode === 0 && ran.stdout.trim() !== ''
+    } catch {
+      // Not at this path; try the next.
+    }
   }
+
+  return null
 }
 
 // The Editor's active platform, or null when no Editor answers. Callers that overlap share one run.
@@ -81,7 +85,7 @@ async function runProbe($: EngineInterface): Promise<string | null> {
   try {
     const bin = await resolveUnity($)
     const ran = await $.process.run(
-      [bin, '--no-banner', '--non-interactive', '--no-color', 'command', 'eval', PROBE, '--timeout', '8', '--project-path', await root($)],
+      [bin, '--no-banner', '--non-interactive', '--no-color', 'command', 'eval', PROBE, '--timeout', '8', '--project-path', projectRoot],
       { timeoutMs: 12000 },
     )
 
@@ -98,7 +102,7 @@ async function whyUnreachable($: EngineInterface): Promise<Connection> {
     const ran = await $.process.run([bin, '--json', '--no-banner', '--non-interactive', 'pipeline', 'list'], {
       timeoutMs: 12000,
     })
-    const path = (await root($)).replace(/\/+$/, '')
+    const path = projectRoot.replace(/\/+$/, '')
     const instances: { projectPath?: string; hasPipelinePackage?: boolean; safeMode?: unknown }[] =
       JSON.parse(ran.stdout)?.data?.instances ?? []
     const mine = instances.find(i => i.projectPath?.replace(/\/+$/, '') === path)
@@ -194,7 +198,7 @@ async function installPipeline($: EngineInterface) {
   try {
     const bin = await resolveUnity($)
     const ran = await $.process.run(
-      [bin, '--no-banner', '--non-interactive', 'pipeline', 'install', '--project-path', await root($)],
+      [bin, '--no-banner', '--non-interactive', 'pipeline', 'install', '--project-path', projectRoot],
       { timeoutMs: 120000 },
     )
     if (ran.exitCode !== 0) return apply($, { state: 'no-pipeline' })
@@ -258,9 +262,7 @@ export const register: Register = on => {
     const ran = await next(e)
     if (!RUNS_UNITY.test(e.command) || (await read($, projectVersion)) === null) return ran
 
-    const m = PROJECT_PATH.exec(e.command)
-    const path = m?.[1] ?? m?.[2] ?? m?.[3]
-    if (path !== undefined) await update($, projectPath, () => path)
+    // Always this session's own project, whatever path the command named.
     recheck($)
 
     return ran

@@ -1,0 +1,42 @@
+name: release
+
+# A maintainer pushes a tag vX.Y.Z matching .claude-plugin/plugin.json; this checks it and publishes
+# a GitHub Release. Creating v* tags is limited to maintainers by a repository ruleset.
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: read
+
+env:
+  CLAUDE_CODE_VERSION: 2.1.312
+  DISABLE_AUTOUPDATER: '1'
+  CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1'
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+      - name: Tag matches plugin.json
+        run: |
+          version=$(node -pe 'require("./.claude-plugin/plugin.json").version')
+          if [ "$GITHUB_REF_NAME" != "v$version" ]; then
+            echo "::error::Tag $GITHUB_REF_NAME does not match plugin.json version $version"
+            exit 1
+          fi
+      - run: npm install --global "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}"
+      - run: claude plugin validate .
+      - run: claude plugin test .
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --verify-tag --generate-notes --title "$GITHUB_REF_NAME"

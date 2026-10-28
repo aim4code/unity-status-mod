@@ -1,0 +1,68 @@
+name: Bug report
+description: The band shows the wrong thing, gets stuck, or something fails.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Found a security problem? Don't open an issue: report it privately as described in SECURITY.md.
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What the band showed, and what you expected instead.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Start a Claude Code session in a Unity project
+        2. ...
+    validations:
+      required: true
+  - type: input
+    id: mod-version
+    attributes:
+      label: unity-status version
+      description: The `version` in the installed plugin's `.claude-plugin/plugin.json`, or `claude plugin list`.
+    validations:
+      required: true
+  - type: input
+    id: claude-version
+    attributes:
+      label: Claude Code version
+      description: Output of `claude --version`.
+    validations:
+      required: true
+  - type: input
+    id: unity-version
+    attributes:
+      label: Unity Editor version
+    validations:
+      required: true
+  - type: input
+    id: unity-cli
+    attributes:
+      label: Unity CLI version
+      description: Output of `unity --version`.
+  - type: dropdown
+    id: os
+    attributes:
+      label: Operating system
+      options: [macOS, Linux, Windows, Other]
+    validations:
+      required: true
+  - type: dropdown
+    id: surface
+    attributes:
+      label: Where you run Claude Code
+      options: [Terminal, Desktop app, VS Code, Other]
+  - type: checkboxes
+    id: pipeline
+    attributes:
+      label: Unity project
+      options:
+        - label: The project has the Pipeline package installed
+        - label: More than one Claude Code session was open on the same project
