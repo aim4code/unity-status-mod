@@ -1,0 +1,5 @@
+{
+  "name": "unity-status-mod",
+  "owner": { "name": "Daniel Conde Linares" },
+  "plugins": [{ "name": "unity-status", "source": "./" }]
+}
