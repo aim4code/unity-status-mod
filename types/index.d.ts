@@ -1,4 +1,15 @@
-export type Connection = 'checking' | 'idle' | 'launching' | 'connected' | 'failed'
+export type Connection =
+  | 'checking'
+  | 'idle'
+  | 'launching'
+  | 'connected'
+  | 'failed'
+  // an Editor holds the project open but does not answer yet: loading, importing
+  | 'starting'
+  // an Editor holds the project open and cannot answer: no Pipeline package, or Safe Mode
+  | 'no-pipeline'
+  | 'installing'
+  | 'safe-mode'
 
 declare module 'claude-code' {
   interface PluginState {

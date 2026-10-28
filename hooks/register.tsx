@@ -9,8 +9,9 @@ const connection = atom({ plugin: 'unity-status', key: 'connection' } as const, 
 const platform = atom({ plugin: 'unity-status', key: 'platform' } as const, null)
 const isHidden = atom({ plugin: 'unity-status', key: 'isHidden' } as const, false)
 
-const LAUNCH_POLL_MS = 5000
-const LAUNCH_TRIES = 24
+const WATCH_MS = 5000
+// 10 minutes of watching an Editor that is opening or starting, then give up.
+const WATCH_TRIES = 120
 
 // A Bash command that runs the unity CLI (bare, or by a path ending in /unity).
 const RUNS_UNITY = /(?:^|[\s;&|(`'"/])unity(?=\s|$)/
@@ -24,13 +25,19 @@ const PROBE_LINE = /UNITYSTATUS:([A-Za-z0-9_]+)/
 const STATUS: Partial<Record<Connection, string>> = {
   checking: 'Checking for Unity…',
   launching: 'Opening Unity…',
+  starting: 'Unity is starting…',
+  'no-pipeline': 'Open, no Pipeline package',
+  installing: 'Installing Pipeline…',
+  'safe-mode': 'Open in Safe Mode (compile errors)',
   failed: "Couldn't reach Unity",
 }
+
+type Look = { state: Connection; target?: string }
 
 let unityBin: string | null = null
 let projectRoot = '.'
 let inFlight: Promise<string | null> | null = null
-let waiting: { cancel: () => void } | null = null
+let watching: { cancel: () => void } | null = null
 
 async function resolveUnity($: EngineInterface): Promise<string> {
   if (unityBin !== null) return unityBin
@@ -45,6 +52,22 @@ async function resolveUnity($: EngineInterface): Promise<string> {
   return bin
 }
 
+async function root($: EngineInterface): Promise<string> {
+  return (await read($, projectPath)) ?? projectRoot
+}
+
+// Whether an Editor has the project open: Unity holds Temp/UnityLockfile while it runs.
+// null where lsof is not there to ask.
+async function isOpen($: EngineInterface): Promise<boolean | null> {
+  try {
+    const ran = await $.process.run(['lsof', '-t', '--', `${await root($)}/Temp/UnityLockfile`], { timeoutMs: 5000 })
+
+    return ran.exitCode === 0 && ran.stdout.trim() !== ''
+  } catch {
+    return null
+  }
+}
+
 // The Editor's active platform, or null when no Editor answers. Callers that overlap share one run.
 function probe($: EngineInterface): Promise<string | null> {
   inFlight ??= runProbe($).finally(() => {
@@ -57,9 +80,8 @@ function probe($: EngineInterface): Promise<string | null> {
 async function runProbe($: EngineInterface): Promise<string | null> {
   try {
     const bin = await resolveUnity($)
-    const path = (await read($, projectPath)) ?? projectRoot
     const ran = await $.process.run(
-      [bin, '--no-banner', '--non-interactive', '--no-color', 'command', 'eval', PROBE, '--timeout', '8', '--project-path', path],
+      [bin, '--no-banner', '--non-interactive', '--no-color', 'command', 'eval', PROBE, '--timeout', '8', '--project-path', await root($)],
       { timeoutMs: 12000 },
     )
 
@@ -69,17 +91,49 @@ async function runProbe($: EngineInterface): Promise<string | null> {
   }
 }
 
-async function setConnection($: EngineInterface, state: Connection, target: string | null = null) {
-  await update($, platform, () => target)
+// An open Editor that does not answer: no Pipeline package, Safe Mode, or still starting.
+async function whyUnreachable($: EngineInterface): Promise<Connection> {
+  try {
+    const bin = await resolveUnity($)
+    const ran = await $.process.run([bin, '--json', '--no-banner', '--non-interactive', 'pipeline', 'list'], {
+      timeoutMs: 12000,
+    })
+    const path = (await root($)).replace(/\/+$/, '')
+    const instances: { projectPath?: string; hasPipelinePackage?: boolean; safeMode?: unknown }[] =
+      JSON.parse(ran.stdout)?.data?.instances ?? []
+    const mine = instances.find(i => i.projectPath?.replace(/\/+$/, '') === path)
+    if (mine?.hasPipelinePackage === false) return 'no-pipeline'
+    if (mine?.safeMode) return 'safe-mode'
+  } catch {
+    // Can't tell why; treat it as still starting.
+  }
+
+  return 'starting'
+}
+
+// One look at the project: closed, connected, or open and why it doesn't answer.
+async function look($: EngineInterface): Promise<Look> {
+  const open = await isOpen($)
+  if (open === false) return { state: 'idle' }
+  const target = await probe($)
+  if (target !== null) return { state: 'connected', target }
+  if (open === null) return { state: 'idle' }
+
+  return { state: await whyUnreachable($) }
+}
+
+async function apply($: EngineInterface, { state, target }: Look) {
+  await update($, platform, () => target ?? null)
   await update($, connection, () => state)
 }
 
-// One look at the Editor: connected with its platform, or back to the Connect button.
+// One check, unless a watch already owns the band; an Editor still starting gets watched.
 async function check($: EngineInterface) {
-  const target = await probe($)
-  // Connect's own flow owns the band while it opens Unity.
-  if ((await read($, connection)) === 'launching') return
-  await setConnection($, target === null ? 'idle' : 'connected', target)
+  if (watching !== null) return
+  const seen = await look($)
+  if (watching !== null || (await read($, connection)) === 'installing') return
+  await apply($, seen)
+  if (seen.state === 'starting') watch($)
 }
 
 // Runs a check off the caller's path, so no prompt, tool call or command waits on it.
@@ -89,37 +143,66 @@ function recheck($: EngineInterface) {
   })
 }
 
-// The Connect button: reach an open Editor, or open the project and wait for one.
-async function launch($: EngineInterface) {
-  await setConnection($, 'checking')
-  const target = await probe($)
-  if (target !== null) return setConnection($, 'connected', target)
+// Every 5 seconds until the Editor answers, can't (no Pipeline, Safe Mode), closes, or 10 minutes pass.
+function watch($: EngineInterface) {
+  watching?.cancel()
+  let tries = 0
+  // After `unity open`, the lock takes a moment to appear; until then "not open" is not "closed".
+  let hasOpened = false
+  watching = $.clock.every(WATCH_MS, () => {
+    void (async () => {
+      tries += 1
+      const seen = await look($)
+      if (seen.state !== 'idle') hasOpened = true
+      const isWaiting =
+        seen.state === 'starting' || (seen.state === 'idle' && !hasOpened && (await read($, connection)) === 'launching')
+      if (isWaiting && tries < WATCH_TRIES) return
 
-  await setConnection($, 'launching')
+      watching?.cancel()
+      watching = null
+      await apply($, isWaiting ? { state: 'failed' } : seen)
+    })()
+  })
+}
+
+// The Connect button: reach the Editor that has the project open, or open it and wait.
+async function launch($: EngineInterface) {
+  await apply($, { state: 'checking' })
+  const seen = await look($)
+  if (seen.state !== 'idle') {
+    await apply($, seen)
+    if (seen.state === 'starting') watch($)
+    return
+  }
+
+  await apply($, { state: 'launching' })
   try {
     const bin = await resolveUnity($)
     const opened = await $.process.run([bin, '--no-banner', '--non-interactive', 'open', projectRoot], {
       timeoutMs: 60000,
     })
-    if (opened.exitCode !== 0) return setConnection($, 'failed')
+    if (opened.exitCode !== 0) return apply($, { state: 'failed' })
   } catch {
-    return setConnection($, 'failed')
+    return apply($, { state: 'failed' })
   }
-
-  let tries = 0
-  waiting?.cancel()
-  waiting = $.clock.every(LAUNCH_POLL_MS, () => {
-    void waitForEditor($, ++tries)
-  })
+  watch($)
 }
 
-async function waitForEditor($: EngineInterface, tries: number) {
-  const target = await probe($)
-  if (target === null && tries < LAUNCH_TRIES) return
-
-  waiting?.cancel()
-  waiting = null
-  await setConnection($, target === null ? 'failed' : 'connected', target)
+// The Install Pipeline button: add the package, then watch while Unity imports it.
+async function installPipeline($: EngineInterface) {
+  await apply($, { state: 'installing' })
+  try {
+    const bin = await resolveUnity($)
+    const ran = await $.process.run(
+      [bin, '--no-banner', '--non-interactive', 'pipeline', 'install', '--project-path', await root($)],
+      { timeoutMs: 120000 },
+    )
+    if (ran.exitCode !== 0) return apply($, { state: 'no-pipeline' })
+  } catch {
+    return apply($, { state: 'no-pipeline' })
+  }
+  await apply($, { state: 'starting' })
+  watch($)
 }
 
 export const register: Register = on => {
@@ -141,7 +224,7 @@ export const register: Register = on => {
 
     // A reload drops every timer, so whatever was running starts over from one check.
     if (version !== null) {
-      await setConnection($, 'checking')
+      await apply($, { state: 'checking' })
       recheck($)
     }
 
@@ -202,6 +285,13 @@ export const register: Register = on => {
         <Box key="actions" flexShrink={0}>
           {state === 'idle' || state === 'failed' ? (
             <Button key="connect" label="Connect to Unity" onPress={() => $.clock.after(0, () => void launch($))} />
+          ) : null}
+          {state === 'no-pipeline' ? (
+            <Button
+              key="install"
+              label="Install Pipeline"
+              onPress={() => $.clock.after(0, () => void installPipeline($))}
+            />
           ) : null}
           <Text> </Text>
           <Button key="hide" label="Hide" onPress={() => update($, isHidden, () => true)} />

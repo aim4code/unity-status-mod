@@ -1,6 +1,6 @@
 {
   "name": "unity-status",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "description": "In a Unity project, shows the project's Unity version and the open Editor's active platform above the prompt, with a Connect to Unity button.",
   "types": "./types/index.d.ts",
   "author": {
