@@ -11,11 +11,12 @@
 
 ## Security-sensitive?
 
-Tick and explain below if this PR adds or changes any of these. A maintainer reviews these lines first.
+Tick each item this PR adds or changes, and explain it below; a maintainer reviews these lines first. Leave a box unticked if this PR doesn't touch it. If none apply, tick the last box.
 
 - [ ] A `$.process.run` / `$.process.spawn` call (new command, new argument, or input reaching an argument)
 - [ ] File writes (`$.fs.write`) or anything that changes the user's project
 - [ ] Network access (`$.http`)
 - [ ] A hook that changes Claude's input or output (`tool.call`, `prompt.submit`, `session.append`, ...) instead of only observing it
+- [ ] None of these apply
 
 <!-- If ticked: what runs, with what input, and why it is safe (argv only, no shell; a timeout; only on the user's click if it changes anything). -->
