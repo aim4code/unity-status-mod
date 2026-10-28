@@ -1,4 +1,4 @@
-export type Connection = 'initializing' | 'idle' | 'connecting' | 'launching' | 'connected' | 'failed'
+export type Connection = 'checking' | 'idle' | 'launching' | 'connected' | 'failed'
 
 declare module 'claude-code' {
   interface PluginState {
@@ -7,12 +7,9 @@ declare module 'claude-code' {
       projectVersion: string | null
       projectPath: string | null
       connection: Connection
-      // what the live Editor reported on the last probe that answered
-      editorVersion: string | null
+      // the Editor's active build target on the last check that got an answer
       platform: string | null
       isHidden: boolean
-      // the loading animation's step, advanced only while a check is running
-      frame: number
     }
   }
 }

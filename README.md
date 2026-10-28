@@ -4,15 +4,30 @@ A Claude Code mod that shows the status of the current Unity project session.
 
 ## What it does
 
-- **Only in Unity projects.** The band above the prompt appears only when the session's folder has `ProjectSettings/ProjectVersion.txt`. Elsewhere the mod shows nothing and does nothing.
-- **At startup:** a Claude-style spinner with a shimmering "Initializing Unity status mod…" while the mod checks once whether an Editor is already open on the project. If one is, the band starts connected.
-- **Before connecting:** `Unity <project version> · ◆` on the left and `[Connect to Unity] [Hide]` anchored on the right. The version comes from `ProjectVersion.txt`, so it shows with no Editor running.
-- **Connect to Unity** first tries to reach an Editor that's already open on the project. If none answers, it runs `unity open <project>` and checks every 5 seconds, for up to 2 minutes, until the Editor answers. The spinner shows "Connecting to Unity…" or "Opening Unity…" meanwhile.
-- **Once connected:** `Unity <editor version> · <active platform> [↻] [Hide]`. ↻ re-reads the platform. If the Editor no longer answers, the Connect button comes back.
-- **Connection pop-up.** The first connection in a session pops up "Unity connected for this session". A connection Claude makes by running a `unity` command also counts, with no button press needed.
-- **Hide** hides the band for the rest of the session. Run `/unity-status` to show it again.
+A one-line band above the prompt, shown only when the session's folder is a Unity project (it has `ProjectSettings/ProjectVersion.txt`). Elsewhere the mod shows nothing and does nothing.
 
-The mod has no background timer. It asks the Editor (with `unity command eval`) only once at startup, when you press Connect or ↻, after Claude runs a `unity` command, and while it's waiting for a newly opened Editor. The spinner's own timer runs only while one of those checks does. If Claude passed `--project-path`, the mod checks that project.
+| When | Left | Right |
+|---|---|---|
+| Checking (startup, or after Connect) | `Unity 6000.0.23f1 · Checking for Unity…` | `[Hide]` |
+| Opening Unity | `Unity 6000.0.23f1 · Opening Unity…` | `[Hide]` |
+| No Editor | `Unity 6000.0.23f1` | `[Connect to Unity] [Hide]` |
+| Couldn't open one | `Unity 6000.0.23f1 · Couldn't reach Unity` | `[Connect to Unity] [Hide]` |
+| Connected | `Unity 6000.0.23f1 · StandaloneOSX` | `[Hide]` |
+
+- The version comes from `ProjectVersion.txt`, so it shows with no Editor running. The platform is the open Editor's active build target.
+- **Connect to Unity** first tries to reach an Editor that's already open on the project. If none answers, it runs `unity open <project>` and checks every 5 seconds, for up to 2 minutes.
+- **Hide** hides the band for the rest of the session. `/unity-status` shows it again and checks Unity.
+
+### Keeping it current
+
+There's no background timer. The mod asks the Editor (one `unity command eval` call) at startup and again, without delaying anything, whenever:
+
+- you send a prompt,
+- a client such as the desktop app attaches to the session,
+- Claude runs a `unity` command, or
+- you run `/unity-status`.
+
+So a platform switch, or an Editor you opened or closed yourself, shows up the next time you send something. If Claude passed `--project-path`, the mod checks that project.
 
 ## Requirements
 
