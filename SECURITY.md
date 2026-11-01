@@ -19,7 +19,8 @@ This is the scope a report would concern.
 **Runs by itself (read-only):** at session start, when you send a prompt, when a client attaches, and after Claude runs a `unity` command:
 
 - reads `ProjectSettings/ProjectVersion.txt` in the session's folder
-- runs `lsof -t -- <project>/Temp/UnityLockfile`, which prints only process IDs, to see whether Unity has the project open
+- on macOS and Linux, runs `lsof -t -- <project>/Temp/UnityLockfile`, which prints only process IDs, to see whether Unity has the project open
+- on Windows, tries to read `<project>/Temp/UnityLockfile` for the same reason, and runs `%SystemRoot%\System32\where.exe $PATH:unity` if the CLI isn't at a default location. Only an absolute `.exe` path outside the project is accepted
 - runs `unity command eval` with a fixed, read-only C# expression that returns the active build target
 - runs `unity pipeline list`, to tell why an open Editor doesn't answer
 

@@ -30,7 +30,7 @@ Thanks for helping. The mod runs commands on people's machines, inside their Cla
 |---|---|
 | `hooks/register.tsx` | The whole mod: the checks, the buttons, the band |
 | `types/index.d.ts` | The state the band reads, declared for the type-checker and `claude plugin validate` |
-| `tests/register.test.tsx` | Tests against a simulated world (project folder, `lsof`, the unity CLI) |
+| `tests/register.test.tsx` | Tests against a simulated world (project folder, `lsof`, the unity CLI), and a simulated Windows (`windowsWorld()`) |
 | `.claude-plugin/plugin.json` | Name and version; `marketplace.json` makes the repo installable |
 
 ## Making a change
@@ -47,7 +47,7 @@ Every pull request is reviewed against these rules. A change that breaks one nee
 
 1. **Argv only, no shell.** Call `$.process.run([...])` with a fixed argument list. Never build a shell string or pass outside input to `/bin/sh -c`.
 2. **Only this session's project.** The project path is the session's own folder. Never take a path from Claude's commands, files in the repo, or other outside text.
-3. **Absolute executables.** Reach `lsof`, `unity` and other tools by absolute paths, never through a relative or project-local path.
+3. **Absolute executables.** Reach `lsof`, `where.exe`, `unity` and other tools by absolute paths, never through a relative or project-local path.
 4. **A timeout on every process**, and every timer bounded. No polling without an end.
 5. **Nothing changes the user's project or machine without their click.** Checks that run by themselves must be read-only.
 6. **Observe, don't rewrite.** Hooks on Claude's own events (`tool.call`, `prompt.submit`) pass `next(e)` through unchanged, and the mod's own work runs off-path (`$.clock.after`).
