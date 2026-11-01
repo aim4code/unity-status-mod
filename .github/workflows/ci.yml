@@ -33,7 +33,19 @@ jobs:
       - run: npm install --global "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}"
       - run: claude plugin validate .
 
+  # The ruleset on main requires a check named `test`, which a matrix job doesn't report.
   test:
+    if: always()
+    needs: test-on
+    runs-on: ubuntu-latest
+    steps:
+      - name: Tests passed on every platform
+        env:
+          RESULT: ${{ needs.test-on.result }}
+        run: test "$RESULT" = success
+
+  test-on:
+    name: test (${{ matrix.os }})
     strategy:
       fail-fast: false
       matrix:
