@@ -12,12 +12,16 @@ const WATCH_MS = 5000
 // 10 minutes of watching an Editor that is opening or starting, then give up.
 const WATCH_TRIES = 120
 
-// A Bash command that runs the unity CLI (bare, or by a path ending in /unity).
-const RUNS_UNITY = /(?:^|[\s;&|(`'"/])unity(?=\s|$)/
+// A shell command that runs the unity CLI (bare, or by a path ending in /unity, \unity or unity.exe).
+const RUNS_UNITY = /(?:^|[\s;&|(`'"/\\])unity(?:\.exe)?(?=[\s'"]|$)/i
 // Only a plain version string from the project's file reaches the band.
 const EDITOR_VERSION = /^m_EditorVersion:[ \t]*([0-9A-Za-z._-]{1,32})[ \t]*$/m
 // Absolute, so a `lsof` in the project folder or early on PATH is never the one run.
 const LSOF = ['/usr/sbin/lsof', '/usr/bin/lsof']
+// A session folder on Windows: a drive letter, or a network share.
+const WINDOWS_PATH = /^(?:[A-Za-z]:[\\/]|\\\\)/
+// The only Windows answer taken for the CLI: an .exe at an absolute path on a drive.
+const WINDOWS_EXE = /^[A-Za-z]:\\.+\.exe$/i
 
 // Asks the live Editor for its active build target, behind a marker to find it in the output.
 const PROBE = 'return "UNITYSTATUS:" + UnityEditor.EditorUserBuildSettings.activeBuildTarget;'
@@ -37,13 +41,52 @@ type Look = { state: Connection; target?: string }
 
 let unityBin: string | null = null
 let projectRoot = '.'
+let isWindows = false
 let inFlight: Promise<string | null> | null = null
 let watching: { cancel: () => void } | null = null
+
+// A path in the form two paths are compared in: Windows ignores case and takes either slash.
+function comparable(path: string): string {
+  const plain = isWindows ? path.replace(/\\/g, '/').toLowerCase() : path
+
+  return plain.replace(/\/+$/, '')
+}
+
+function isUsableWindowsExe(path: string): boolean {
+  return WINDOWS_EXE.test(path) && !comparable(path).startsWith(`${comparable(projectRoot)}/`)
+}
+
+// The CLI on Windows: its default installs first, then PATH. `$PATH:` keeps where.exe from
+// searching the current folder, which it would otherwise do first.
+async function resolveWindowsUnity($: EngineInterface): Promise<string> {
+  const localAppData = await $.env.get('LOCALAPPDATA')
+  const userProfile = await $.env.get('USERPROFILE')
+  const installs = [
+    ...(localAppData === undefined ? [] : [`${localAppData}\\Unity\\bin\\unity.exe`]),
+    ...(userProfile === undefined ? [] : [`${userProfile}\\.unity\\bin\\unity.exe`]),
+  ]
+  for (const install of installs) {
+    if (isUsableWindowsExe(install) && (await $.fs.exists(install))) return install
+  }
+
+  const systemRoot = await $.env.get('SystemRoot')
+  if (systemRoot === undefined) throw new Error('unity CLI not found')
+  const found = await $.process.run([`${systemRoot}\\System32\\where.exe`, '$PATH:unity'], { timeoutMs: 5000 })
+  const bin = found.stdout.split(/\r?\n/).find(isUsableWindowsExe)
+  if (bin === undefined) throw new Error('unity CLI not found')
+
+  return bin
+}
 
 // The unity CLI's absolute path: its default install first, then PATH. A relative answer
 // (a `unity` in the current folder) is never taken.
 async function resolveUnity($: EngineInterface): Promise<string> {
   if (unityBin !== null) return unityBin
+  if (isWindows) {
+    unityBin = await resolveWindowsUnity($)
+
+    return unityBin
+  }
   const found = await $.process.run([
     '/bin/sh',
     '-c',
@@ -56,9 +99,28 @@ async function resolveUnity($: EngineInterface): Promise<string> {
   return bin
 }
 
+// Windows refuses a read of the lock while an Editor holds it. One that reads is left over from
+// a crash, so closed; one that can't be read but exists is held. null where it can't be asked.
+async function isLockHeld($: EngineInterface): Promise<boolean | null> {
+  const lock = `${projectRoot}/Temp/UnityLockfile`
+  try {
+    await $.fs.read(lock)
+
+    return false
+  } catch {
+    // Missing or held; exists tells which.
+  }
+  try {
+    return await $.fs.exists(lock)
+  } catch {
+    return null
+  }
+}
+
 // Whether an Editor has the project open: Unity holds Temp/UnityLockfile while it runs.
 // null where lsof is not there to ask.
 async function isOpen($: EngineInterface): Promise<boolean | null> {
+  if (isWindows) return isLockHeld($)
   for (const lsof of LSOF) {
     try {
       const ran = await $.process.run([lsof, '-t', '--', `${projectRoot}/Temp/UnityLockfile`], { timeoutMs: 5000 })
@@ -102,10 +164,10 @@ async function whyUnreachable($: EngineInterface): Promise<Connection> {
     const ran = await $.process.run([bin, '--json', '--no-banner', '--non-interactive', 'pipeline', 'list'], {
       timeoutMs: 12000,
     })
-    const path = projectRoot.replace(/\/+$/, '')
+    const path = comparable(projectRoot)
     const instances: { projectPath?: string; hasPipelinePackage?: boolean; safeMode?: unknown }[] =
       JSON.parse(ran.stdout)?.data?.instances ?? []
-    const mine = instances.find(i => i.projectPath?.replace(/\/+$/, '') === path)
+    const mine = instances.find(i => i.projectPath !== undefined && comparable(i.projectPath) === path)
     if (mine?.hasPipelinePackage === false) return 'no-pipeline'
     if (mine?.safeMode) return 'safe-mode'
   } catch {
@@ -212,6 +274,7 @@ async function installPipeline($: EngineInterface) {
 export const register: Register = on => {
   on('session.start', async ($, e, next) => {
     projectRoot = e.cwd
+    isWindows = WINDOWS_PATH.test(e.cwd)
     let version: string | null = null
     try {
       const text = await $.fs.read(`${e.cwd}/ProjectSettings/ProjectVersion.txt`)
@@ -263,6 +326,15 @@ export const register: Register = on => {
     if (!RUNS_UNITY.test(e.command) || (await read($, projectVersion)) === null) return ran
 
     // Always this session's own project, whatever path the command named.
+    recheck($)
+
+    return ran
+  }).catch(($, e, next) => next(e))
+
+  on('tool.call', { tool: 'PowerShell' }, async ($, e, next) => {
+    const ran = await next(e)
+    if (!RUNS_UNITY.test(e.command) || (await read($, projectVersion)) === null) return ran
+
     recheck($)
 
     return ran

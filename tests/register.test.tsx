@@ -338,6 +338,187 @@ test('a --project-path in Claude\'s command never moves the mod off this session
   await ui.unmount()
 })
 
+// Windows beneath the mod: env vars, which files exist, where.exe, and the lock's state.
+// A held lock refuses reads, as Windows does while an Editor runs.
+function windowsWorld(
+  on: On,
+  opts: {
+    lock: 'missing' | 'stale' | 'held'
+    platform?: string | null
+    installed?: string[]
+    whereFinds?: string
+    versionFile?: string
+    projectPath?: string
+    hasPipeline?: boolean
+  },
+) {
+  const editor = { lock: opts.lock, platform: opts.platform ?? null, hasPipeline: opts.hasPipeline ?? true }
+  const runs: string[][] = []
+  mock.env(on, {
+    LOCALAPPDATA: 'C:\\Users\\me\\AppData\\Local',
+    USERPROFILE: 'C:\\Users\\me',
+    SystemRoot: 'C:\\Windows',
+  })
+  on('fs.read', (_, e) => {
+    const path = (e as { path: string }).path
+    if (path.endsWith('ProjectVersion.txt')) return { value: opts.versionFile ?? PROJECT_VERSION }
+    if (editor.lock === 'held') throw new Error('EBUSY')
+    if (editor.lock === 'missing') throw new Error('ENOENT')
+    return { value: '' }
+  })
+  on('fs.exists', (_, e) => {
+    const path = (e as { path: string }).path
+    if (path.endsWith('UnityLockfile')) return { value: editor.lock !== 'missing' }
+    // By suffix: on a Linux runner the engine resolves a C:\ path against its working directory.
+    const installed = opts.installed ?? ['C:\\Users\\me\\AppData\\Local\\Unity\\bin\\unity.exe']
+    return { value: installed.some(install => path.endsWith(install)) }
+  })
+  on('process.run', (_, e) => {
+    const argv = (e as { argv: readonly string[] }).argv
+    runs.push([...argv])
+    const answers = editor.lock === 'held' && editor.platform !== null && editor.hasPipeline
+    const done = (stdout: string, exitCode = 0) => ({
+      value: { exitCode, stdout, stderr: '', isStdoutTruncated: false, isStderrTruncated: false },
+    })
+
+    if (argv[0]?.endsWith('where.exe')) return opts.whereFinds === undefined ? done('', 1) : done(opts.whereFinds)
+    if (argv.includes('eval')) {
+      return done(answers ? `{"result":"UNITYSTATUS:${editor.platform}"}` : '{"success":false}')
+    }
+    if (argv.includes('pipeline') && argv.includes('list')) {
+      const instance = { projectPath: opts.projectPath ?? 'C:\\proj', hasPipelinePackage: editor.hasPipeline, safeMode: null }
+      return done(JSON.stringify({ success: true, data: { instances: editor.lock === 'held' ? [instance] : [] } }))
+    }
+
+    return done('')
+  })
+  on('command.register', () => ({ value: { command: 'unity-status' } }))
+  on('session.start', (_, e) => ({ cwd: e.cwd }))
+  on('tool.call', () => ({ result: {} }))
+  on('ui.render', ($, e) => {
+    const { Text } = $.ui.resolve(e)
+
+    return <Text>engine</Text>
+  })
+
+  return { editor, runs }
+}
+
+const start = { cwd: 'C:\\proj', surface: 'desktop', isInteractive: true } as const
+
+test('Windows: a held lock with an answering Editor shows the platform, by the default install', async ($, on) => {
+  const clock = mock.clock(on)
+  const { runs } = windowsWorld(on, { lock: 'held', platform: 'StandaloneWindows64' })
+
+  await $.session.start(start)
+  await clock.settle()
+
+  const ui = await $.ui.mount({ ...BAND, surface: 'desktop' })
+  expect(await ui.find({ type: 'Text', text: /StandaloneWindows64/ })).not.toBe(undefined)
+  expect(runs.some(argv => argv[0] === '/bin/sh' || argv[0]?.endsWith('lsof') === true)).toBe(false)
+  expect(runs.find(argv => argv.includes('eval'))?.[0]).toBe('C:\\Users\\me\\AppData\\Local\\Unity\\bin\\unity.exe')
+  await ui.unmount()
+})
+
+for (const lock of ['missing', 'stale'] as const) {
+  test(`Windows: a ${lock} lock is a closed project, and nothing asks the CLI`, async ($, on) => {
+    const clock = mock.clock(on)
+    const { runs } = windowsWorld(on, { lock })
+
+    await $.session.start(start)
+    await clock.settle()
+
+    const ui = await $.ui.mount({ ...BAND, surface: 'desktop' })
+    expect(await ui.find({ type: 'Button', key: 'connect' })).not.toBe(undefined)
+    expect(runs.some(argv => argv.includes('eval'))).toBe(false)
+    await ui.unmount()
+  })
+}
+
+test('Windows: the install under the user profile is used when the first is absent', async ($, on) => {
+  const clock = mock.clock(on)
+  const { runs } = windowsWorld(on, { lock: 'held', platform: 'Android', installed: ['C:\\Users\\me\\.unity\\bin\\unity.exe'] })
+
+  await $.session.start(start)
+  await clock.settle()
+
+  expect(runs.find(argv => argv.includes('eval'))?.[0]).toBe('C:\\Users\\me\\.unity\\bin\\unity.exe')
+})
+
+test('Windows: PATH is searched without the current folder, and CRLF output is split', async ($, on) => {
+  const clock = mock.clock(on)
+  const { runs } = windowsWorld(on, {
+    lock: 'held',
+    platform: 'Android',
+    installed: [],
+    whereFinds: 'C:\\tools\\unity.exe\r\nC:\\other\\unity.exe\r\n',
+  })
+
+  await $.session.start(start)
+  await clock.settle()
+
+  expect(runs.find(argv => argv[0]?.endsWith('where.exe'))).toEqual(['C:\\Windows\\System32\\where.exe', '$PATH:unity'])
+  expect(runs.find(argv => argv.includes('eval'))?.[0]).toBe('C:\\tools\\unity.exe')
+})
+
+for (const [name, whereFinds] of [
+  ['a relative path', 'unity.exe\r\n'],
+  ['a script rather than an .exe', 'C:\\tools\\unity.cmd\r\n'],
+  ['a unity.exe inside the project', 'c:\\PROJ\\tools\\unity.exe\r\n'],
+] as const) {
+  test(`Windows: ${name} on PATH is never run`, async ($, on) => {
+    const clock = mock.clock(on)
+    const { runs } = windowsWorld(on, { lock: 'held', platform: 'Android', installed: [], whereFinds })
+
+    await $.session.start(start)
+    await clock.settle()
+
+    expect(runs.some(argv => argv.includes('eval'))).toBe(false)
+  })
+}
+
+test('Windows: the CLI\'s spelling of the project path still matches this session\'s', async ($, on) => {
+  const clock = mock.clock(on)
+  windowsWorld(on, { lock: 'held', platform: 'Android', hasPipeline: false, projectPath: 'c:/PROJ/' })
+
+  await $.session.start(start)
+  await clock.settle()
+
+  const ui = await $.ui.mount({ ...BAND, surface: 'desktop' })
+  expect(await ui.find({ type: 'Button', key: 'install' })).not.toBe(undefined)
+  await ui.unmount()
+})
+
+test('Windows: a CRLF ProjectVersion.txt shows the version', async ($, on) => {
+  const clock = mock.clock(on)
+  windowsWorld(on, { lock: 'missing', versionFile: 'm_EditorVersion: 6000.0.23f1\r\nm_EditorVersionWithRevision: x\r\n' })
+
+  await $.session.start(start)
+  await clock.settle()
+
+  const ui = await $.ui.mount({ ...BAND, surface: 'desktop' })
+  expect((await ui.find({ type: 'Text', text: /Unity 6000/ }))?.text).toBe('Unity 6000.0.23f1')
+  await ui.unmount()
+})
+
+for (const command of ['unity status', '& "C:\\Users\\me\\AppData\\Local\\Unity\\bin\\unity.exe" status', 'unity.exe status']) {
+  test(`Windows: PowerShell running ${command} rechecks`, async ($, on) => {
+    const clock = mock.clock(on)
+    const { editor } = windowsWorld(on, { lock: 'held', platform: 'Android' })
+
+    await $.session.start(start)
+    await clock.settle()
+    const ui = await $.ui.mount({ ...BAND, surface: 'desktop' })
+
+    editor.platform = 'iOS'
+    await $.tool.call({ tool: 'PowerShell', command })
+    await clock.settle()
+
+    expect(await ui.find({ type: 'Text', text: /iOS/ })).not.toBe(undefined)
+    await ui.unmount()
+  })
+}
+
 test('a ProjectVersion.txt whose version is not a plain version string shows no band', async ($, on) => {
   const clock = mock.clock(on)
   const { runs } = world(on, {

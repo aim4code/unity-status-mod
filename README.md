@@ -4,7 +4,7 @@
 [![Release](https://img.shields.io/github/v/release/aim4code/unity-status-mod?sort=semver)](https://github.com/aim4code/unity-status-mod/releases)
 [![License: MIT](https://img.shields.io/github/license/aim4code/unity-status-mod)](LICENSE)
 [![Claude Code plugin](https://img.shields.io/badge/Claude%20Code-plugin-d97757)](https://docs.anthropic.com/en/docs/claude-code)
-[![Platforms](https://img.shields.io/badge/platform-macOS%20%7C%20Linux-lightgrey)](#requirements)
+[![Platforms](https://img.shields.io/badge/platform-macOS%20%7C%20Linux%20%7C%20Windows-lightgrey)](#requirements)
 
 A Claude Code mod that shows your Unity project's status in a band above the prompt: the project's Unity version and, while the Editor is open, its active platform. It also has a button to connect to the Editor, or open it.
 
@@ -29,8 +29,8 @@ The band appears only when the session's folder is a Unity project, meaning it h
 | Connected | `Unity 6000.0.23f1 · StandaloneOSX` | `[Hide]` |
 
 - **Version:** comes from `ProjectVersion.txt`, so it shows even with no Editor running.
-- **Platform:** the open Editor's active build target.
-- **Whether Unity is open:** comes from Unity's own lock. An Editor keeps `Temp/UnityLockfile` open while it has the project, and the mod checks that with `lsof`. This works with or without the Pipeline package, and whichever session or app launched the Editor.
+- **Platform:** the open Editor's active build target, such as `StandaloneOSX` or `StandaloneWindows64`.
+- **Whether Unity is open:** comes from Unity's own lock. An Editor keeps `Temp/UnityLockfile` open while it has the project. The mod checks that with `lsof` on macOS and Linux. On Windows it tries to read the file, which Windows refuses while an Editor holds it, so a lock left behind by a crash doesn't count as open. This works with or without the Pipeline package, and whichever session or app launched the Editor.
 - **Connect to Unity** never launches a second Editor. If the project is already open, the band says why it can't reach it, or waits for it to finish starting. Only when the project isn't open does it run `unity open`.
 - **Install Pipeline** adds the Pipeline package to the project's `Packages/manifest.json`. Unity then imports it and the band connects.
 - **While Unity is opening or starting,** the band checks every 5 seconds. It stops once the Editor answers, can't answer, closes, or 10 minutes pass, so no state is left stuck.
@@ -76,8 +76,8 @@ Then run `/reload-plugins` in any session that's already open.
 ## Requirements
 
 - Claude Code 2.1.309 or newer.
-- The Unity CLI (`unity`), at `~/.unity/bin/unity` or on your `PATH`.
-- `lsof`, which comes with macOS and most Linux systems. It's how the mod tells whether the project is open. On Windows the mod can only see an Editor that answers.
+- The Unity CLI (`unity`). On macOS and Linux, at `~/.unity/bin/unity` or on your `PATH`. On Windows, at `%LOCALAPPDATA%\Unity\bin\unity.exe`, `%USERPROFILE%\.unity\bin\unity.exe` or on your `PATH`.
+- On macOS and Linux, `lsof`, which comes with macOS and most Linux systems. It's how the mod tells whether the project is open. Windows needs nothing extra.
 - To show the platform, the project needs the Pipeline package. The band offers to install it.
 
 ## What it runs on your machine
@@ -85,7 +85,8 @@ Then run `/reload-plugins` in any session that's already open.
 **By itself, read-only:** at startup and at the moments listed above, the mod:
 
 - reads `ProjectSettings/ProjectVersion.txt`
-- runs `lsof -t` on the project's `Temp/UnityLockfile`, which prints only process IDs
+- on macOS and Linux, runs `lsof -t` on the project's `Temp/UnityLockfile`, which prints only process IDs
+- on Windows, tries to read the project's `Temp/UnityLockfile`, and runs `where.exe $PATH:unity` if the CLI isn't at a default location
 - runs `unity command eval` with a fixed C# expression that returns the active build target
 - runs `unity pipeline list`
 
