@@ -369,7 +369,9 @@ function windowsWorld(
   on('fs.exists', (_, e) => {
     const path = (e as { path: string }).path
     if (path.endsWith('UnityLockfile')) return { value: editor.lock !== 'missing' }
-    return { value: (opts.installed ?? ['C:\\Users\\me\\AppData\\Local\\Unity\\bin\\unity.exe']).includes(path) }
+    // By suffix: on a Linux runner the engine resolves a C:\ path against its working directory.
+    const installed = opts.installed ?? ['C:\\Users\\me\\AppData\\Local\\Unity\\bin\\unity.exe']
+    return { value: installed.some(install => path.endsWith(install)) }
   })
   on('process.run', (_, e) => {
     const argv = (e as { argv: readonly string[] }).argv
